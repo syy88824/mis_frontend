@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Primary Colors */
+    --puzzle-background: #947e7e;
+    --puzzle-card: #ffffff;
+    --puzzle-text-primary: #1e1e1e;
+    --puzzle-text-secondary: #757575;
+    --puzzle-border: #d9d9d9;
+  }
+}
+
+@layer utilities {
+  .bg-puzzle-background {
+    background-color: var(--puzzle-background);
+  }
+  
+  .bg-puzzle-card {
+    background-color: var(--puzzle-card);
+  }
+  
+  .text-puzzle-primary {
+    color: var(--puzzle-text-primary);
+  }
+  
+  .text-puzzle-secondary {
+    color: var(--puzzle-text-secondary);
+  }
+  
+  .border-puzzle {
+    border-color: var(--puzzle-border);
+  }
+}

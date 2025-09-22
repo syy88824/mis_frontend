@@ -1,8 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import Plot from "react-plotly.js";
 import Plotly from "plotly.js-dist-min";
 import jsPDF from "jspdf";
+import heatmap from "./heatmap.png";
+import heatmap_sim from "./heatmap_similar.png";
 
 /** Palette (provided) */
 const BASE_PALETTE = [
@@ -27,7 +29,6 @@ const DATA_URLS = {
   tsnePoints:
     "https://raw.githubusercontent.com/syy88824/C_practice/refs/heads/main/tsne_extracols.json",
   somUrls: [
-    // "https://raw.githubusercontent.com/syy88824/C_practice/refs/heads/main/som_true_label_id.json",
     "https://raw.githubusercontent.com/syy88824/C_practice/refs/heads/main/som_APT30.json",
     "https://raw.githubusercontent.com/syy88824/C_practice/refs/heads/main/som_dropper.json",
   ],
@@ -39,7 +40,7 @@ function TopBar() {
   return (
     <header className="sticky top-0 z-50 bg-blue-100 border-b border-blue-200">
       <nav className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
-        <div className="text-lg font-semibold text-slate-800"><a href="/"> Platform name</a></div>
+        <div className="text-lg font-semibold text-slate-800"><a href="/"> Malvec</a></div>
         <ul className="flex items-center gap-6 text-slate-700">
           <li><a href="#about" className="hover:text-blue-500">About us</a></li>
           <li><a href="./evaluation" className="hover:text-blue-500">Evaluation</a></li>
@@ -52,22 +53,97 @@ function TopBar() {
 
 export default function ReportPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const state = location?.state || {};
+  const searchParams = new URLSearchParams(location?.search || "");
+
+  const incomingFilename =
+    state.filename ||
+    searchParams.get("file") ||
+    null;
+
+  const incomingPredLabelRaw =
+    state.predLabel ||
+    state.predictedLabel ||
+    searchParams.get("label") ||
+    null;
+
+  // 正規化（去頭尾空白、小寫），方便比對
+  const incomingPredLabel = incomingPredLabelRaw
+    ? String(incomingPredLabelRaw).trim()
+    : null;
+
+  console.log("[report] incomingFilename:", incomingFilename, "incomingPredLabel:", incomingPredLabel);
+
   useEffect(() => { document.title = "Analysis Report"; }, []);
 
   const graphRefs = { family: useRef(null), heatmap: useRef(null), apt30: useRef(null), tsne: useRef(null) };
-
-  // (Keep your other demo values; can be replaced by JSON if you have)
-  const familyScores = useMemo(() => [
-    { label: "TROJAN.GENERIC", score: 0.62 },
-    { label: "ADWARE.SCREENSAVER", score: 0.22 },
-    { label: "GOODWARE", score: 0.16 },
-  ], []);
-  const apt30Prob = 0.78;
-  const filename = "sample.exe";
+  const apt30Prob = 0.00;
+  const dropperProb = 0.00;
+  const filename = "Dogwaffle_Install_1_2_free.exe";
+  const SIMILAR_NAME = 'SimpleDataBackup88.exe';
 
   const [labelList, setLabelList] = useState(null);
   const [tsneRows, setTsneRows] = useState(null);
   const [loadErr, setLoadErr] = useState("");
+
+  const familyScores = useMemo(
+    () => [
+      { label: "TROJAN.GENERIC", score: 0.16 },
+      { label: "ADWARE.SCREENSAVER", score: 0.22 },
+      { label: "GOODWARE", score: 0.62 },
+    ],
+    []
+  );
+
+  // 從 tsneRows 找一個屬於 label 的點（或 centroid + jitter）
+  function pickScatterPointForLabel(tsneRows, label, jitter = 0.02) {
+    console.log("[pickScatter] called with label:", label);
+    if (!Array.isArray(tsneRows) || !tsneRows.length || !label) {
+      console.log("[pickScatter] no rows or no label -> null");
+      return null;
+    }
+    const pts = tsneRows.filter(r => {
+      const lab = r["true_label"] ?? r["pred_label"] ?? "other";
+      return String(lab) === String(label);
+    });
+    console.log("[pickScatter] found pts for label:", label, "count:", pts.length);
+    if (pts.length === 0) return null;
+    // 隨機取一個實際點（更自然），或改成 centroid：
+    const chosen = pts[Math.floor(Math.random() * pts.length)];
+    // 若要 jitter（在原點周圍微調），可用以下：
+    const jx = (Math.random() - 0.5) * jitter * (Math.max(...tsneRows.map(r => r.x)) - Math.min(...tsneRows.map(r => r.x)) || 1);
+    const jy = (Math.random() - 0.5) * jitter * (Math.max(...tsneRows.map(r => r.y)) - Math.min(...tsneRows.map(r => r.y)) || 1);
+    const out = { x: chosen.x + jx, y: chosen.y + jy, base: chosen };
+    console.log("[pickScatter] chosen:", out);
+    return out;
+  }
+
+  // 從單一 somArray 中根據 label 選一個 cell，再在 cell 中放點（row/col + jitter）
+  function pickSomPointForLabel(somArray, label, jitter = 0.25) {
+    if (!Array.isArray(somArray) || !somArray.length || !label) return null;
+    // collect candidates with positive proportion
+    const candidates = somArray
+      .map(c => ({ cell: c, p: Number((c.proportions && c.proportions[label]) || 0) }))
+      .filter(o => o.p > 0);
+
+    if (candidates.length === 0) return null;
+    // weighted random by p
+    const total = candidates.reduce((s, c) => s + c.p, 0);
+    let r = Math.random() * total;
+    for (const c of candidates) {
+      r -= c.p;
+      if (r <= 0) {
+        const cx = c.cell.col + (Math.random() - 0.5) * jitter;
+        const cy = c.cell.row + (Math.random() - 0.5) * jitter;
+        return { x: cx, y: cy };
+      }
+    }
+    // fallback to the first
+    const c = candidates[0];
+    return { x: c.cell.col, y: c.cell.row };
+  }
+
 
   useEffect(() => {
     (async () => {
@@ -106,7 +182,7 @@ export default function ReportPage() {
         type: "scattergl", mode: "markers", name: lab,
         x: arr.map(d => d.x), y: arr.map(d => d.y),
         marker: { size: 4, color: labelColors[lab] },
-        text: arr.map(d => `label: ${d["true_label"] ?? "-"}`),
+        text: arr.map(d => `${d["true_label"] ?? "-"}`),
         hoverinfo: "text",
       };
     });
@@ -115,12 +191,14 @@ export default function ReportPage() {
   const summaryJson = useMemo(() => ({
     filename,
     top1_family: familyScores.reduce((a, b) => a.score >= b.score ? a : b).label,
+    similar_file: SIMILAR_NAME,
     apt30: { probability: apt30Prob, is_APT30: apt30Prob >= 0.5 },
-  }), [filename, familyScores, apt30Prob]);
+    dropper: { probability: dropperProb, is_dropper: dropperProb >= 0.5 },
+  }), [filename, familyScores, SIMILAR_NAME, apt30Prob, dropperProb]);
 
-  const SectionCard = ({ title, children }) => (
+  const SectionCard = ({ title, subtitle, children }) => (
     <section className="mb-6 border border-slate-200 rounded-2xl bg-white shadow-sm">
-      <div className="px-5 py-3 border-b border-slate-100"><h3 className="text-slate-800 font-semibold">{title}</h3></div>
+      <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between"><h3 className="text-slate-800 font-semibold">{title}</h3><div className="text-sm text-slate-600 text-right">{subtitle}</div></div>
       <div className="p-4">{children}</div>
     </section>
   );
@@ -184,23 +262,6 @@ export default function ReportPage() {
   }
 
 
-  function extractTitleDeep(obj, limit = 5) {
-    const seen = new Set();
-    function dfs(o, depth) {
-      if (!o || typeof o !== "object" || depth > limit || seen.has(o)) return null;
-      seen.add(o);
-      if (typeof o.title === "string" && o.title.trim()) return o.title.trim();
-      for (const v of Object.values(o)) {
-        if (v && typeof v === "object") {
-          const t = dfs(v, depth + 1);
-          if (t) return t;
-        }
-      }
-      return null;
-    }
-    return dfs(obj, 0);
-  }
-
   function formatPropsForHover(props, digits = 3, topK = 10) {
     const arr = Object.entries(props || {})
       .map(([k, v]) => [k, Number(v) || 0])
@@ -247,15 +308,6 @@ export default function ReportPage() {
       const isIndexLike = keys.every(k => /^\d+$/.test(k));
       return isIndexLike ? keys.sort((a, b) => a - b).map(k => obj[k]) : null;
     };
-
-    // 3) 深度搜尋：在任何鍵裡找「陣列」，且陣列元素像 cell（有 row/col 或有 proportions/counts）
-    function looksLikeCell(x) {
-      if (!x || typeof x !== "object") return false;
-      const hasRowLike = ("row" in x) || ("r" in x) || ("i" in x) || ("y" in x);
-      const hasColLike = ("col" in x) || ("column" in x) || ("c" in x) || ("j" in x) || ("x" in x);
-      const hasDist = ("proportions" in x) || ("counts" in x);
-      return (hasRowLike && hasColLike) || hasDist;
-    }
 
     function deepFindArray(node, depth = 0, limit = 6) {
       if (depth > limit || node == null) return null;
@@ -352,11 +404,6 @@ export default function ReportPage() {
           if (arr.length) console.log(`[SOM] sample[${i}]:`, arr.slice(0, 2));
           return arr;
         });
-
-        // const titles = jsons.map((j, i) => {
-        //   const t = extractTitleDeep(j);
-        //   return t || `SOM #${i + 1}`;   // 以序號為後備，避免隨機碼
-        // });
         const titles = ['SOM-APT30', 'SOM-dropper']
         setSomDatasets(norm);
         setSomTitles(titles);
@@ -370,10 +417,18 @@ export default function ReportPage() {
   }, []);
 
   useEffect(() => {
+    console.log("[useEffect:genPoints] somDatasets.length:", somDatasets.length, "tsneRows:", tsneRows ? tsneRows.length : 0, "incomingPredLabel:", incomingPredLabel, "incomingFilename:", incomingFilename);
     if (!somDatasets.length) return;
 
     // ---- SOM：每張產生一顆黑點並推論 ----
-    const newSomPts = somDatasets.map(arr => {
+    const newSomPts = somDatasets.map((arr, i) => {
+      // 優先依 incomingPredLabel（或 incomingFilename 推斷）找 cell
+      const labelToUse = incomingPredLabel || incomingFilename || null;
+      if (labelToUse) {
+        const pt = pickSomPointForLabel(arr, labelToUse, 0.25);
+        if (pt) return pt;
+      }
+      // fallback: 原本的全域隨機
       let maxR = 0, maxC = 0;
       for (const c of arr) {
         if (Number.isFinite(c.row)) maxR = Math.max(maxR, c.row);
@@ -381,28 +436,41 @@ export default function ReportPage() {
       }
       return { x: Math.random() * (maxC || 1), y: Math.random() * (maxR || 1) };
     });
+
+    // 用 knnPredictSom 取得 labels（不變）
     const somLabs = newSomPts.map((pt, i) => knnPredictSom(somDatasets[i], pt.x, pt.y, 5).label);
     setSomRandPts(newSomPts);
     setSomPredLabels(somLabs);
 
-    // ---- t-SNE：用 tsneRows（原始點）來做 kNN，並在其邊界內生成一顆黑點 ----
+    // ---- t-SNE：若有 incomingPredLabel，優先在該 label 點集合中抽一點 ----
     if (Array.isArray(tsneRows) && tsneRows.length) {
-      const xs = tsneRows.map(r => r.x), ys = tsneRows.map(r => r.y);
-      const minX = Math.min(...xs), maxX = Math.max(...xs);
-      const minY = Math.min(...ys), maxY = Math.max(...ys);
-      const rx = minX + Math.random() * (maxX - minX);
-      const ry = minY + Math.random() * (maxY - minY);
-      setScatterRandPt({ x: rx, y: ry });
+      let chosen = null;
+      if (incomingPredLabel) {
+        chosen = pickScatterPointForLabel(tsneRows, incomingPredLabel, 0.02);
+      }
+      if (!chosen) {
+        // fallback to bounding-box random
+        const xs = tsneRows.map(r => r.x), ys = tsneRows.map(r => r.y);
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minY = Math.min(...ys), maxY = Math.max(...ys);
+        const rx = minX + Math.random() * (maxX - minX);
+        const ry = minY + Math.random() * (maxY - minY);
+        chosen = { x: rx, y: ry };
+      }
+      setScatterRandPt(chosen);
+      console.log("[useEffect] set scatterRandPt:", chosen);
 
       const points = tsneRows.map(r => ({
         x: r.x,
         y: r.y,
         label: r["true_label"] ?? r["pred_label"] ?? "other",
       }));
-      const pred = knnPredictScatter(points, rx, ry, 7);
+      const pred = knnPredictScatter(points, chosen.x, chosen.y, 7);
       setScatterPredLabel(pred.label);
+      console.log("[useEffect] scatter kNN pred:", pred);
     }
-  }, [somDatasets, tsneRows]);
+  }, [somDatasets, tsneRows, incomingPredLabel, incomingFilename]);
+
 
 
   // 依 proportions 畫多類扇形；每格圓固定半徑 r，不重疊
@@ -445,7 +513,6 @@ export default function ReportPage() {
     for (const c of somArray) {
       const x = c.col, y = c.row;
       const props = Object.entries(c.proportions || {}).map(([lab, v]) => [lab, Number(v) || 0]);
-      const sum = props.reduce((a, [, v]) => a + v, 0) || 0;
 
       // 依比例排序
       props.sort((a, b) => b[1] - a[1]);
@@ -538,7 +605,7 @@ export default function ReportPage() {
       mode: "markers",
       x: extraPoints.map(p => p.x),
       y: extraPoints.map(p => p.y),
-      marker: { size: 5, color: "black" },
+      marker: { size: 1, color: "black" },
       name: "test point",
       showlegend: false,
       hoverinfo: "skip",
@@ -551,6 +618,52 @@ export default function ReportPage() {
     };
   }
 
+  // === Heatmap URLs（改成你的檔案或 URL；放 public/ 下可用 "/images/xxx.png"）===
+  const HEATMAP_IMG_TOP = heatmap;
+  const HEATMAP_IMG_BOTTOM = heatmap_sim;
+
+  // refs
+  const topWrapRef = useRef(null);
+  const bottomWrapRef = useRef(null);
+  const barRef = useRef(null);
+  const topImgRef = useRef(null);
+  const bottomImgRef = useRef(null);
+
+  // 由兩張圖 naturalWidth 推得的「共同內容寬度」
+  const [contentW, setContentW] = useState(2000);
+
+  // 兩張圖載入後，取最大寬度，並把三者 scrollLeft 對齊
+  const updateContentWidth = useCallback(() => {
+    const tw = topImgRef.current?.naturalWidth || 0;
+    const bw = bottomImgRef.current?.naturalWidth || 0;
+    const maxW = Math.max(tw, bw, 1200); // 至少 1200，避免太小
+    setContentW(maxW);
+
+    const cur = barRef.current?.scrollLeft || 0;
+    if (topWrapRef.current) topWrapRef.current.scrollLeft = cur;
+    if (bottomWrapRef.current) bottomWrapRef.current.scrollLeft = cur;
+  }, []);
+
+  // 拖曳 bar → 同步兩張圖
+  const onBarScroll = useCallback((e) => {
+    const x = e.currentTarget.scrollLeft;
+    if (topWrapRef.current) topWrapRef.current.scrollLeft = x;
+    if (bottomWrapRef.current) bottomWrapRef.current.scrollLeft = x;
+  }, []);
+
+  // 直接捲動任一張圖 → 同步另外一張與下方 bar
+  const onImgScroll = useCallback((e) => {
+    const x = e.currentTarget.scrollLeft;
+    if (barRef.current && barRef.current.scrollLeft !== x) {
+      barRef.current.scrollLeft = x;
+    }
+    if (e.currentTarget === topWrapRef.current) {
+      if (bottomWrapRef.current?.scrollLeft !== x) bottomWrapRef.current.scrollLeft = x;
+    } else if (e.currentTarget === bottomWrapRef.current) {
+      if (topWrapRef.current?.scrollLeft !== x) topWrapRef.current.scrollLeft = x;
+    }
+  }, []);
+
 
 
 
@@ -558,11 +671,12 @@ export default function ReportPage() {
     const doc = new jsPDF({ unit: "pt", format: "a4" });
     const pad = 48;
     doc.setFontSize(18); doc.text("Malware Report", pad, 64);
-    doc.setFontSize(11); doc.setTextColor(100); doc.text("Generated by (platform name)", pad, 84);
     const lines = [
       ["filename", String(summaryJson.filename)],
       ["malware family (top-1)", summaryJson.top1_family],
+      ["similar attention heatmap", String(summaryJson.similar_file)],
       ["is_APT30", `${summaryJson.apt30.is_APT30} (p=${summaryJson.apt30.probability})`],
+      ["is_dropper", `${summaryJson.dropper.is_dropper} (p=${summaryJson.dropper.probability})`],
     ];
     const y0 = 120; doc.setTextColor(20); doc.setFontSize(12);
     lines.forEach((row, i) => { doc.text(`${row[0]}:`, pad, y0 + i * 20); doc.text(String(row[1]), pad + 160, y0 + i * 20); });
@@ -635,37 +749,104 @@ export default function ReportPage() {
           </div>
         </div>
 
-        {/* 1. family (kept) */}
-        <SectionCard title="malware family">
-          <Plot
-            data={[{
-              type: "bar",
-              x: familyScores.map(d => d.label),
-              y: familyScores.map(d => d.score),
-              marker: { color: familyScores.map(d => labelColors[d.label]) },
-            }]}
-            layout={{ margin: { t: 24, r: 16, b: 48, l: 40 }, yaxis: { range: [0, 1] } }}
-            style={{ width: "100%", height: 320 }}
-            config={{ responsive: true }}
-            onInitialized={(fig, gd) => { graphRefs.family.current = gd; }}
-            onUpdate={(fig, gd) => { graphRefs.family.current = gd; }}
-          />
+        {/* 1. scatter (kept, unified colors via BASE_PALETTE) */}
+        <SectionCard title="t-SNE embedding" subtitle={`label = ${summaryJson.top1_family}`}>
+          {loadErr && <div className="text-red-600 text-sm mb-2">Load error: {loadErr}</div>}
+          {!tsneRows ? <div>Loading…</div> : (
+            <Plot
+              data={[
+                ...tsneTraces,
+                ...(scatterRandPt ? [{
+                  type: "scattergl",
+                  mode: "markers",
+                  x: [scatterRandPt.x],
+                  y: [scatterRandPt.y],
+                  marker: { size: 10, color: "black" },
+                  name: "test point",
+                  showlegend: false,
+                  hoverinfo: "skip",
+                }] : [])
+              ]}
+              layout={{ margin: { t: 24, r: 16, b: 40, l: 40 }, legend: { orientation: "h" } }}
+              style={{ width: "100%", height: 360 }}
+              config={{ responsive: true, displayModeBar: true }}
+              onInitialized={(fig, gd) => { graphRefs.tsne.current = gd; }}
+              onUpdate={(fig, gd) => { graphRefs.tsne.current = gd; }}
+            />
+          )}
         </SectionCard>
 
-        {/* 2. heatmap (kept) */}
-        <SectionCard title="attention heatmap">
-          <Plot
-            data={[{ z: [[0.1, 0.3, 0.5, 0.2, 0.1], [0.2, 0.4, 0.7, 0.4, 0.2], [0.05, 0.2, 0.35, 0.3, 0.1]], type: "heatmap", colorscale: "YlOrRd" }]}
-            layout={{ margin: { t: 24, r: 16, b: 40, l: 40 } }}
-            style={{ width: "100%", height: 320 }}
-            config={{ responsive: true }}
-            onInitialized={(fig, gd) => { graphRefs.heatmap.current = gd; }}
-            onUpdate={(fig, gd) => { graphRefs.heatmap.current = gd; }}
-          />
+        {/* 2. attention heatmaps (synced, vertical stack) */}
+        <SectionCard title="attention heatmaps">
+          <div className="flex flex-col gap-3">
+            <div className="text-xs font-medium text-slate-700">
+              Attention heatmap of this file
+            </div>
+            {/* 上圖容器（固定高度，垂直可捲動；水平以下方 bar 為主，也可直接拖圖） */}
+            <div
+              ref={topWrapRef}
+              className="relative w-full h-50 overflow-x-hidden overflow-y-auto rounded-xl border border-slate-200 bg-white"
+              onScroll={onImgScroll}
+            >
+              {/* 內容寬度對齊 contentW，確保與下方 bar 一致 */}
+              <div style={{ width: contentW }}>
+                <img
+                  ref={topImgRef}
+                  src={HEATMAP_IMG_TOP}
+                  alt="attention heatmap (top)"
+                  className="block max-w-none"
+                  onLoad={updateContentWidth}
+                />
+              </div>
+            </div>
+
+            <div className="text-xs font-medium text-slate-700">
+              The most similar attention heatmap : file{" "}
+              <span className="font-semibold">"{SIMILAR_NAME}"</span>
+            </div>
+
+            {/* 下圖容器 */}
+            <div
+              ref={bottomWrapRef}
+              className="relative w-full h-50 overflow-x-hidden overflow-y-auto rounded-xl border border-slate-200 bg-white"
+              onScroll={onImgScroll}
+            >
+              <div style={{ width: contentW }}>
+                <img
+                  ref={bottomImgRef}
+                  src={HEATMAP_IMG_BOTTOM}
+                  alt="attention heatmap (bottom)"
+                  className="block max-w-none"
+                  onLoad={updateContentWidth}
+                />
+              </div>
+            </div>
+
+            {/* 共同水平拖曳條（拖它即可左右同步兩張圖） */}
+            <div
+              ref={barRef}
+              className="overflow-x-auto overflow-y-hidden rounded-lg border border-slate-200 bg-slate-50 h-5"
+              onScroll={onBarScroll}
+              aria-label="Horizontal scroller for both heatmaps"
+            >
+              {/* 用一個長條元素撐出可拖的寬度 */}
+              <div style={{ width: contentW, height: 0.5 }} />
+            </div>
+          </div>
         </SectionCard>
+
+
+
 
         {/* 3. SOM maps (替換原本 APT30 圖表) */}
-        <SectionCard title={somTitles[somIndex] || "Self-Organizing Map"}>
+        <SectionCard title={somTitles[somIndex] || "Self-Organizing Map"}
+        subtitle={
+          somIndex === 0
+            ? "This file is not attributed to APT30."
+            : somIndex === 1
+            ? "This file is not classified as a dropper."
+            : ""
+        }>
           {somErr && <div className="text-red-600 text-sm mb-2">SOM load error: {somErr}</div>}
           {!somDatasets.length ? (
             <div>Loading SOM…（請在 DATA_URLS.somUrls 放入你的 GitHub raw JSON）</div>
@@ -703,7 +884,7 @@ export default function ReportPage() {
               {/* 重要：同一個 section 中「同時渲染所有 SOM」，
           只有當前索引那張顯示在視口；其餘放到螢幕外且很小，
           但仍然初始化，才能在 PDF 匯出時逐一輸出所有圖 */}
-              <div className="relative">
+              <div className="relative justify-center items-center">
                 {somDatasets.map((somArray, i) => {
                   // 在渲染 SOM 的 map 迴圈裡（i 是索引）
                   const extraPt = somRandPts[i] ? [somRandPts[i]] : [];
@@ -719,50 +900,24 @@ export default function ReportPage() {
                     <div
                       key={i}
                       style={isActive
-                        ? { width: "100%", height: 360 }
+                        ? { width: "100%", height: 500 }
                         : { position: "absolute", left: -9999, top: 0, width: 1, height: 1, opacity: 0 }}
                     >
+                    <div style={{ width: '100%', maxWidth: 800, aspectRatio: '1 / 1' }}>
                       <Plot
                         data={traces}
                         layout={layout}
-                        style={isActive ? { width: "100%", height: 360 } : { width: 1, height: 1 }}
+                        style={isActive ? { width: "100%", height: 500 } : { width: 1, height: 1 }}
                         config={{ responsive: true, displayModeBar: true }}
                         onInitialized={registerSomRef(i)}
                         onUpdate={registerSomRef(i)}
                       />
+                      </div>
                     </div>
                   );
                 })}
               </div>
             </div>
-          )}
-        </SectionCard>
-
-
-        {/* 4. scatter (kept, unified colors via BASE_PALETTE) */}
-        <SectionCard title="t-SNE embedding (from GitHub JSON)">
-          {loadErr && <div className="text-red-600 text-sm mb-2">Load error: {loadErr}</div>}
-          {!tsneRows ? <div>Loading…</div> : (
-            <Plot
-              data={[
-                ...tsneTraces,
-                ...(scatterRandPt ? [{
-                  type: "scattergl",
-                  mode: "markers",
-                  x: [scatterRandPt.x],
-                  y: [scatterRandPt.y],
-                  marker: { size: 5, color: "black" },
-                  name: "test point",
-                  showlegend: false,
-                  hoverinfo: "skip",
-                }] : [])
-              ]}
-              layout={{ margin: { t: 24, r: 16, b: 40, l: 40 }, legend: { orientation: "h" } }}
-              style={{ width: "100%", height: 360 }}
-              config={{ responsive: true, displayModeBar: true }}
-              onInitialized={(fig, gd) => { graphRefs.tsne.current = gd; }}
-              onUpdate={(fig, gd) => { graphRefs.tsne.current = gd; }}
-            />
           )}
         </SectionCard>
 

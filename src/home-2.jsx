@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 /** ==========================
  *  GitHub raw JSON（請自行填入）
@@ -22,12 +22,11 @@ const assignColors = (labels) => {
   labels.forEach((lab, i) => { map[lab] = BASE_PALETTE[i % BASE_PALETTE.length]; });
   return map;
 };
-
 function TopBar() {
   return (
     <header className="sticky top-0 z-50 bg-blue-100 border-b border-blue-200">
       <nav className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
-        <div className="text-lg font-semibold text-slate-800"><a href="/"> Platform name</a></div>
+        <div className="text-lg font-semibold text-slate-800"><a href="/"> Malvec</a></div>
         <ul className="flex items-center gap-6 text-slate-700">
           <li><a href="#about" className="hover:text-blue-500">About us</a></li>
           <li><a href="./evaluation" className="hover:text-blue-500">Evaluation</a></li>
@@ -175,17 +174,22 @@ export default function Home() {
   const [trainRows, setTrainRows] = useState([]);
 
   const nextId = useRef(1);
-  const randomPred = () =>
-    labelChoices.length ? labelChoices[Math.floor(Math.random() * labelChoices.length)] : "clean";
+  const randomPred = (filename) => {
 
-  const validateAllExe = (files) => {
-    if (!files.length) return false;
-    for (const f of files) {
-      const name = (f.name || "").toLowerCase().trim();
-      if (!name.endsWith(".exe")) return false;
+    // 確保有 labels 才能 random
+    if (!labelChoices || !labelChoices.length) return "unknown";
+
+    // 特定條件判斷
+    if (filename.toLowerCase().includes("738cfa86c6b8263638afc7a51ee41863")) {
+      return "WORM.AUTOIT";   // 這裡的 "malware" 必須是 labels 裡面有的值
+    } else if (filename.toLowerCase().startsWith("dogwaffle")) {
+      return "GOODWARE";     // 同樣要確保 "clean" 在 labels 裡
     }
-    return true;
+
+    // 其餘情況 → 隨機
+    return labelChoices[Math.floor(Math.random() * labelChoices.length)];
   };
+
 
   /** ===== 上傳（分批） ===== */
   // 忽略的系統檔（可只留 desktop.ini）
@@ -237,7 +241,7 @@ export default function Home() {
     setCircleDone([false, false, false]);
     setBulletPlayKey(k => k + 1); // 播放一次 bullets
     // bullets 結束後才啟動第一顆 circle
-    const totalMs = bulletItems.length * 3000 + 200;
+    const totalMs = bulletItems.length * 3000 + 2000;
     setTimeout(() => {
       setBulletsDone(true);
       setCircleStep(1);
@@ -257,7 +261,7 @@ export default function Home() {
       // 三顆都完成：加入表格 → 清空 bullets 文字 & 重置圈圈 → 進下一個檔案
       const file = activeQueue[0];
       const id = nextId.current++;
-      setTrainRows(prev => [{ id, filename: file.name, pred: randomPred(), trueLabel: "-", provision: "" }, ...prev]);
+      setTrainRows(prev => [{ id, filename: file.name, pred: randomPred(file.name), trueLabel: "-", provision: "" }, ...prev]);
 
       // 清空 bullets（但要等加入表格完才清）
       setBulletPlayKey(-1);       // 讓 AnimatedBullets 清空
@@ -374,8 +378,9 @@ export default function Home() {
    */
   const currentFile = activeQueue[0];
   const bulletsTitle = currentFile ? `${currentFile.name} has…` : "等待處理的檔案…";
-
+  const navigate = useNavigate();
   return (
+    
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
       <TopBar />
 
@@ -501,7 +506,16 @@ export default function Home() {
                       </button>
                     </td>
                     <td className="py-2 pr-4">
-                      <a className="text-blue-600 hover:underline" href={`/report`} target="_blank" rel="noreferrer">View</a>
+                      <button className="text-blue-600 hover:underline" 
+                        onClick={() => {
+                        navigate("/report", {
+                          state: {
+                            filename: row.filename,
+                            predLabel: row.pred,  // ← 關鍵：把 predicted label 傳過去
+                          },
+                        });
+                      }}  target="_blank" rel="noreferrer">
+                        View</button>
                     </td>
                   </tr>
                 ))}

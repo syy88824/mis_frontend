@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 /** ==========================
- *  JSON sources (GitHub raw)
+ *  GitHub raw JSON（請自行填入）
  *  ========================== */
 export const LABELS_JSON = "https://raw.githubusercontent.com/syy88824/C_practice/refs/heads/main/label_list.json"; // e.g. https://raw.githubusercontent.com/<user>/<repo>/main/labels.json
-export const ANY_DATA_JSON_WITH_TRUE_LABELS = ""; // optional: derive labels from dataset "true_label"
+export const ANY_DATA_JSON_WITH_TRUE_LABELS = ""; // 若無 labels.json，可由資料集的 "true_label" 收集
 
 /** ==========================
- *  Palette (provided)
+ *  調色盤（你提供的 24 色）
  *  ========================== */
 export const BASE_PALETTE = [
   "#1f77b4", "#f4b37aff", "#63c063ff", "#d62728", "#9467bd",
@@ -17,38 +17,43 @@ export const BASE_PALETTE = [
   "#3182bd", "#406d4dff", "#756bb1", "#636363", "#b9450bff",
   "#9c9ede", "#e7ba52", "#b5cf6b", "#cedb9c",
 ];
-
-function assignColors(labels) {
+const assignColors = (labels) => {
   const map = {};
   labels.forEach((lab, i) => { map[lab] = BASE_PALETTE[i % BASE_PALETTE.length]; });
   return map;
-}
-
+};
 function TopBar() {
   return (
     <header className="sticky top-0 z-50 bg-blue-100 border-b border-blue-200">
       <nav className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
-        <div className="text-lg font-semibold text-slate-800">
-          <Link to="/">PUZ Malware Lab</Link>
-        </div>
+        <div className="text-lg font-semibold text-slate-800"><a href="/"> Malvec</a></div>
         <ul className="flex items-center gap-6 text-slate-700">
-          <li><a href="#about" className="hover:text-blue-600">About</a></li>
-          <li><Link className="hover:text-blue-600" to="/evaluation">Evaluation</Link></li>
-          <li><Link className="hover:text-blue-600" to="/report">Report</Link></li>
+          <li><a href="#about" className="hover:text-blue-500">About us</a></li>
+          <li><a href="./evaluation" className="hover:text-blue-500">Evaluation</a></li>
+          <li><a href="#tech" className="hover:text-blue-500">Techniques</a></li>
         </ul>
       </nav>
     </header>
   );
 }
 
-/** -------- Animated Bullets --------
- * 僅在「每個檔案開始處理前」播放一次；progress circle 執行期間完全不動
+/** ----------------- Animated Bullets -----------------
+ *  需求：
+ *  - 只在「檔案開始處理前」播放，每 3 秒顯示一點
+ *  - progress circle 執行期間保持靜止
+ *  - 等整個檔案 3 個圈都完成、資料列加入後再清空
+ *  實作：
+ *  - playKey 正數：開始播放
+ *  - playKey = -1：清空（不播放）
+ *  - 其他：保持當前可見數量
  */
 function AnimatedBullets({ items, playKey, title }) {
   const [visibleCount, setVisibleCount] = useState(0);
+
   useEffect(() => {
+    if (playKey === -1) { setVisibleCount(0); return; } // 清空
+    if (!playKey || !items?.length) return;             // 不動
     setVisibleCount(0);
-    if (!items?.length || !playKey) return;
     let i = 0;
     const id = setInterval(() => {
       i += 1;
@@ -57,6 +62,7 @@ function AnimatedBullets({ items, playKey, title }) {
     }, 3000);
     return () => clearInterval(id);
   }, [items, playKey]);
+
   return (
     <div className="bg-white border rounded-xl p-6 shadow-sm">
       <h3 className="text-lg font-semibold text-slate-800 mb-2">{title}</h3>
@@ -65,39 +71,50 @@ function AnimatedBullets({ items, playKey, title }) {
           <li key={idx} className="mb-1">{t}</li>
         ))}
       </ul>
-      <p className="mt-3 text-xs text-slate-500">
-        每 3 秒顯示下一點；僅在「檔案處理開始前」播放一次，進度圈期間不會動。
-      </p>
     </div>
   );
 }
 
-/** -------- Progress Circle -------- */
-function CircleProgress({ durationSec, active, onDone, size=64 }) {
+/** ----------------- CircleProgress -----------------
+ *  需求：
+ *  - 三個圈初始都是灰色
+ *  - 正在跑的圈顯示動畫
+ *  - 跑完的圈保持藍色直到整個檔案完成
+ *  - 檔案完成後才全部重置成灰色
+ *  實作：
+ *  - props:
+ *    - status: "idle" | "active" | "done"
+ *    - onDone：只在 active 動畫完成時觸發
+ */
+function CircleProgress({ durationSec, status, onDone, size = 64 }) {
   const radius = 28;
   const circumference = 2 * Math.PI * radius;
   const [offset, setOffset] = useState(circumference);
 
+  // 顏色：idle 灰、active 藍動畫、done 藍實心
+  const baseStroke = status === "idle" ? "#e5e7eb" : "#3b82f6";
+  const animate = status === "active";
+
   useEffect(() => {
-    if (!active) { setOffset(circumference); return; }
+    if (!animate) { setOffset(status === "done" ? 0 : circumference); return; }
     const start = performance.now();
     let raf = 0;
     const tick = (now) => {
       const t = Math.min(1, (now - start) / (durationSec * 1000));
       setOffset(circumference * (1 - t));
       if (t < 1) raf = requestAnimationFrame(tick);
-      else onDone?.();
+      else onDone?.(); // 單顆完成
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [active, durationSec, circumference, onDone]);
+  }, [animate, durationSec, circumference, onDone, status]);
 
   return (
     <svg width={size} height={size} viewBox="0 0 80 80" className="mx-auto">
-      <circle cx="40" cy="40" r={radius} stroke="#e5e7eb" strokeWidth="8" fill="none"/>
+      <circle cx="40" cy="40" r={radius} stroke="#e5e7eb" strokeWidth="8" fill="none" />
       <circle
         cx="40" cy="40" r={radius}
-        stroke="#3b82f6" strokeWidth="8" fill="none"
+        stroke={baseStroke} strokeWidth="8" fill="none"
         strokeDasharray={circumference}
         strokeDashoffset={offset}
         strokeLinecap="round"
@@ -107,14 +124,16 @@ function CircleProgress({ durationSec, active, onDone, size=64 }) {
   );
 }
 
+
 export default function Home() {
-  /** ===== Load labels from JSON ===== */
+  useEffect(() => { document.title = "File Uploading"; }, []);
+  /** ===== 讀取 labels ===== */
   const [labelChoices, setLabelChoices] = useState([]);
-  const labelColorMap = useMemo(() => assignColors(labelChoices), [labelChoices]);
+  const colors = useMemo(() => assignColors(labelChoices), [labelChoices]);
 
   useEffect(() => {
     let cancelled = false;
-    async function loadLabels() {
+    (async () => {
       try {
         if (LABELS_JSON) {
           const r = await fetch(LABELS_JSON);
@@ -131,139 +150,141 @@ export default function Home() {
           });
           if (!cancelled && uni.size) setLabelChoices([...uni]);
         }
-      } catch {/* leave empty */}
-    }
-    loadLabels();
+      } catch { }
+    })();
     return () => { cancelled = true; };
   }, []);
 
-  /** ===== Queues: active batch vs next batch =====
-   * 修正 #4：分成 activeQueue（目前批次）與 pendingQueue（下一批）
-   */
-  const [activeQueue, setActiveQueue] = useState([]);   // Array<File> for current batch
-  const [pendingQueue, setPendingQueue] = useState([]); // Array<File> for next batch
-  const [processing, setProcessing] = useState(false);  // 是否正在處理（activeQueue 有目前檔案）
-  const [currentBatchTotal, setCurrentBatchTotal] = useState(0); // 這一批的總數
-  const [lastBatchTotal, setLastBatchTotal] = useState(0);       // 已完成批的總數（為了顯示 0/N）
+  /** ===== 佇列（修正批次顯示） ===== */
+  const [activeQueue, setActiveQueue] = useState([]);   // 目前批次
+  const [pendingQueue, setPendingQueue] = useState([]); // 下一批
+  const [processing, setProcessing] = useState(false);
+  const [currentBatchTotal, setCurrentBatchTotal] = useState(0);
+  const [lastBatchTotal, setLastBatchTotal] = useState(0);
 
-  /** ===== Bullets & circles control =====
-   * 修正 #1：bullets 只在「每個檔案開始處理前」播放一次；progress 期間不動
-   */
+  /** ===== Bullets & Circles 狀態 ===== */
   const bulletItems = ["PE 32-file", "is .exe", "is UPX compressed"];
-  const [bulletPlayKey, setBulletPlayKey] = useState(0); // 僅在「開始新檔案」時遞增
-  const [bulletsDone, setBulletsDone] = useState(false);
-  const [circleStep, setCircleStep] = useState(0); // 0..2
+  const [bulletPlayKey, setBulletPlayKey] = useState(0);   // >0 播放；-1 清空；0 保持
+  const [bulletsDone, setBulletsDone] = useState(false);   // 一次播放完成（顯示完三點）
+  const [circleStep, setCircleStep] = useState(0);         // 0=尚未開始, 1,2,3=第幾顆在跑
+  const [circleDone, setCircleDone] = useState([false, false, false]); // 三顆是否已完成（保持藍色直到整檔案結束）
 
-  /** ===== Training table ===== */
+  /** ===== 模型待訓練資料 ===== */
+  // [ADD] —— 訓練相關狀態
   const [trainRows, setTrainRows] = useState([]);
-  const nextIdRef = useRef(1);
 
-  const randomPred = () => labelChoices.length
-    ? labelChoices[Math.floor(Math.random() * labelChoices.length)]
-    : "clean";
+  const nextId = useRef(1);
+  const randomPred = (filename) => {
 
-  const validateAllExe = (files) => {
-    if (!files.length) return false;
-    for (const f of files) {
-      const name = (f.name || "").toLowerCase().trim();
-      if (!name.endsWith(".exe")) return false;
+    // 確保有 labels 才能 random
+    if (!labelChoices || !labelChoices.length) return "unknown";
+
+    // 特定條件判斷
+    if (filename.toLowerCase().includes("738cfa86c6b8263638afc7a51ee41863")) {
+      return "WORM.AUTOIT";   // 這裡的 "malware" 必須是 labels 裡面有的值
+    } else if (filename.toLowerCase().startsWith("dogwaffle")) {
+      return "GOODWARE";     // 同樣要確保 "clean" 在 labels 裡
     }
-    return true;
+
+    // 其餘情況 → 隨機
+    return labelChoices[Math.floor(Math.random() * labelChoices.length)];
   };
 
-  /** ===== Handle uploads =====
-   * - 若目前「沒有在處理」→ 把這批設為 activeQueue（新批次），更新 batchTotal，並啟動處理
-   * - 若目前正在處理 → 放進 pendingQueue（下一批）
-   */
+
+  /** ===== 上傳（分批） ===== */
+  // 忽略的系統檔（可只留 desktop.ini）
+  const NOISE_NAMES = new Set(["desktop.ini", ".ds_store", "thumbs.db"]);
+
+  function isSystemNoise(file) {
+    const n = (file?.name || "").toLowerCase();
+    return NOISE_NAMES.has(n);
+  }
+
+  // 白名單：只分析 exe（若你也要 dll/sys，就加進去）
+  const ALLOWED_EXT = /\.(exe)$/i;
+  function isAllowedExt(file) {
+    const n = (file?.name || "");
+    return ALLOWED_EXT.test(n);
+  }
+
+
   const handleFiles = (fileList) => {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    if (!validateAllExe(files)) {
-      window.alert("上傳檔案須為執行檔，請確認檔案內容皆正確");
+    // ✅ 新增：先排除系統檔，再做副檔名白名單
+    const toProcess = files.filter(f => !isSystemNoise(f) && isAllowedExt(f));
+    // ✅ 新增：若全被忽略，直接提示並中止
+    if (!toProcess.length) {
+      window.alert("沒有可處理的檔案（已忽略 desktop.ini 等非 exe 檔）。");
       return;
     }
     if (!processing && activeQueue.length === 0) {
-      // 開啟新批次
-      setActiveQueue(files);
-      setCurrentBatchTotal(files.length);
-      setLastBatchTotal(files.length); // 顯示用
-      // 「匯入完成後才啟動」→ 這裡啟動第一個檔案的 bullets，然後進入處理狀態
-      startNextFile(files[0]);
+      // 開新批（注意：用 toProcess，而不是 all/files）
+      setActiveQueue(toProcess);
+      setCurrentBatchTotal(toProcess.length);
+      setLastBatchTotal(toProcess.length);
+      startNextFile(toProcess[0]);
     } else {
-      // 正在處理：下一批
-      setPendingQueue(prev => prev.concat(files));
-      // 不改動目前批次的計數顯示
+      // 排到下一批
+      setPendingQueue(prev => prev.concat(toProcess));
     }
   };
-
   const onInputChange = (e) => handleFiles(e.target.files);
   const onDrop = (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
 
-  /** ===== Start next file in activeQueue ===== */
+  /** ===== 開始處理下一個檔案（先播 bullets；完成後才啟動 circles） ===== */
   const startNextFile = (file) => {
     if (!file) return;
     setProcessing(true);
     setBulletsDone(false);
     setCircleStep(0);
-    // 只在這裡遞增 playKey（每個檔案處理前一次）
-    setBulletPlayKey(k => k + 1);
-
-    // bullets 時長：3 項 * 3s + buffer
-    const totalMs = bulletItems.length * 3000 + 200;
-    setTimeout(() => setBulletsDone(true), totalMs);
+    setCircleDone([false, false, false]);
+    setBulletPlayKey(k => k + 1); // 播放一次 bullets
+    // bullets 結束後才啟動第一顆 circle
+    const totalMs = bulletItems.length * 3000 + 2000;
+    setTimeout(() => {
+      setBulletsDone(true);
+      setCircleStep(1);
+    }, totalMs);
   };
 
-  /** ===== 當 bullets 完成後，才開始 3 個進度圈 ===== */
-  useEffect(() => {
-    if (!processing || !bulletsDone) return;
-    setCircleStep(0);
-  }, [processing, bulletsDone]);
-
-  /** ===== 當某一檔案全部處理完成（3 個 circle 跑完） ===== */
-  const afterFileFullyProcessed = (file) => {
-    // 加到模型待訓練資料（新的一列）
-    const id = nextIdRef.current++;
-    const row = {
-      id,
-      filename: file.name,
-      pred: randomPred(),
-      trueLabel: "-",
-      provision: "",
-    };
-    setTrainRows(prev => [row, ...prev]); // 新的在最上
-  };
-
-  /** ===== 進度圈完成 callback ===== */
-  const onCircleDone = () => {
-    if (circleStep < 2) {
-      setCircleStep(s => s + 1);
+  /** ===== 單顆 circle 完成 ===== */
+  const handleCircleDone = (idx) => {
+    setCircleDone(prev => {
+      const next = prev.slice();
+      next[idx] = true;
+      return next;
+    });
+    if (idx < 3) {
+      setCircleStep(idx + 2); // 下一顆開始
     } else {
-      // 這個檔案處理完畢
-      const current = activeQueue[0];
-      afterFileFullyProcessed(current);
+      // 三顆都完成：加入表格 → 清空 bullets 文字 & 重置圈圈 → 進下一個檔案
+      const file = activeQueue[0];
+      const id = nextId.current++;
+      setTrainRows(prev => [{ id, filename: file.name, pred: randomPred(file.name), trueLabel: "-", provision: "" }, ...prev]);
 
-      // 從 activeQueue 移除當前檔案
+      // 清空 bullets（但要等加入表格完才清）
+      setBulletPlayKey(-1);       // 讓 AnimatedBullets 清空
+      setCircleStep(0);           // 停止動畫
+      setCircleDone([false, false, false]); // 全部灰
+
+      // 切到下一個檔案/批次
       setActiveQueue(prev => {
         const rest = prev.slice(1);
         if (rest.length > 0) {
-          // 還有下一個檔案 → 開始下一個
-          setProcessing(false); // 防止 bullets 在圈圈間誤觸
-          // 下一個事件循環再觸發，避免 state 競態
+          setProcessing(false);
           setTimeout(() => startNextFile(rest[0]), 0);
         } else {
-          // 這一批處理完 → 檢查是否有 pending 批次
           setProcessing(false);
           if (pendingQueue.length > 0) {
-            // 轉移 pending 為新的 active 批
             const nextBatch = pendingQueue.slice();
             setPendingQueue([]);
             setActiveQueue(nextBatch);
             setCurrentBatchTotal(nextBatch.length);
-            setLastBatchTotal(nextBatch.length); // 顯示用
+            setLastBatchTotal(nextBatch.length);
             setTimeout(() => startNextFile(nextBatch[0]), 0);
           } else {
-            // 完全 idle；保留 lastBatchTotal 以顯示 0/N
-            setCurrentBatchTotal(0);
+            setCurrentBatchTotal(0); // idle，畫面顯示 0/N
           }
         }
         return rest;
@@ -342,175 +363,178 @@ export default function Home() {
       setLastBatchTotal(0);
       setSelectedIds(new Set());
       setSelectAll(false);
-    }, 60000);
+    }, 10000);
   };
 
-  /** ===== Counter 顯示（修正 #4） =====
-   * - 進行中：remaining = activeQueue.length（包含目前檔案），total = currentBatchTotal
-   * - Idle：remaining = 0，total = lastBatchTotal（如 0/2）
-   */
+  /** ===== 批次計數顯示 ===== */
   const remaining = activeQueue.length > 0 ? activeQueue.length : 0;
   const total = activeQueue.length > 0 ? currentBatchTotal : lastBatchTotal;
 
-  /** ===== Responsive 版面（修正 #3） =====
-   * xl: 兩欄 → 左（上傳 + bullets），右（progress + table）
-   * md 以下：單欄 → 上傳 → bullets → progress → table
+  /** ===== 版面配置（依你的草圖） =====
+   *  最大化：第一列 左：Upload（寬） 右：Bullets（窄）
+   *         第二列：Progress（佔滿兩欄）
+   *         第三列：模型待訓練（佔滿兩欄）
+   *  寬度縮到一半：全部直向堆疊（Upload → Bullets → Progress → Table）
    */
   const currentFile = activeQueue[0];
   const bulletsTitle = currentFile ? `${currentFile.name} has…` : "等待處理的檔案…";
-
+  const navigate = useNavigate();
   return (
+    
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
       <TopBar />
 
-      <main className="mx-auto max-w-6xl px-4 py-8 grid grid-cols-1 xl:grid-cols-2 gap-8">
-        {/* 左欄：上傳 + bullets（在 md/below 也會在上傳正下方） */}
-        <div className="space-y-6">
-          <section
-            className="border-2 border-dashed border-slate-300 rounded-xl p-8 bg-white shadow-sm"
-            onDrop={(e) => { e.preventDefault(); onDrop(e); }}
-            onDragOver={(e) => e.preventDefault()}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-slate-800">Upload .exe (single/multiple or whole folder)</h2>
-              <div className="text-xs text-slate-500">支援多檔與整個資料夾上傳（僅限 .exe）</div>
-            </div>
-            <div className="flex items-center gap-3">
-              <input type="file" multiple webkitdirectory="true" directory="true" className="hidden" id="folderInput" onChange={onInputChange} />
-              <label htmlFor="folderInput" className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
-                Select files / folder
-              </label>
+      <main className="mx-auto max-w-6xl px-4 grid grid-cols-1 xl:grid-cols-3 ">
+        {/* 第一列：Upload（span 2） + Bullets（span 1） */}
+        <section
+          className="xl:col-span-2 border-2 border-dashed border-slate-300 rounded-xl p-8 bg-white shadow-sm"
+          onDrop={onDrop}
+          onDragOver={(e) => e.preventDefault()}
+        >
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-slate-800">Upload .exe (single/multiple or whole folder)</h2>
+            <div className="text-xs text-slate-500">支援多檔與整個資料夾上傳（僅限 .exe）</div>
+          </div>
+          <div className="flex items-center gap-3">
+            <input type="file" multiple webkitdirectory="true" directory="true" className="hidden" id="folderInput" onChange={onInputChange} />
+            <label htmlFor="folderInput" className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
+              Select folder
+            </label>
 
-              <input type="file" accept=".exe" multiple id="filesInput" className="hidden" onChange={onInputChange} />
-              <label htmlFor="filesInput" className="px-4 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-900 cursor-pointer">
-                Select executables
-              </label>
+            <input type="file" accept=".exe" multiple id="filesInput" className="hidden" onChange={onInputChange} />
+            <label htmlFor="filesInput" className="px-4 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-900 cursor-pointer">
+              Select executables
+            </label>
 
-              <span className="text-sm text-slate-500">或直接把資料夾/檔案拖曳到此區</span>
-            </div>
+            <span className="text-sm text-slate-500">或直接把資料夾/檔案拖曳到此區</span>
+          </div>
 
-            {/* Counter（以批次顯示） */}
-            <div className="mt-4 text-sm text-slate-600">
-              {total ? `待處理檔案數：${remaining} / ${total}` : "尚未選擇檔案"}
-            </div>
-          </section>
+          <div className="mt-4 text-sm text-slate-600">
+            {total ? `待處理檔案數：${remaining} / ${total}` : "尚未選擇檔案"}
+          </div>
+        </section>
 
-          {/* Bullets：永遠放在上傳區正下方（xl 左欄；md 以下同一欄） */}
+        <div className="xl:col-span-1">
           <AnimatedBullets
             items={bulletItems}
-            playKey={processing && !bulletsDone ? bulletPlayKey : 0 /* 只有在「檔案開始處理且 bullets 尚未完成」才播放 */}
+            playKey={processing && !bulletsDone ? bulletPlayKey : (processing ? bulletPlayKey : 0)}
             title={bulletsTitle}
           />
         </div>
 
-        {/* 右欄：progress + table（md 以下會排在 bullets 後面） */}
-        <section className="space-y-6">
-          <div className="bg-white border rounded-xl p-6 shadow-sm">
-            <h3 className="font-semibold text-slate-800 mb-4">Processing (per file)</h3>
-            <div className="grid grid-cols-3 gap-6">
-              {["Static checks", "Scan engine", "Report prep"].map((label, i) => (
+        {/* 第二列：Progress（span 3） */}
+        <section className="xl:col-span-3 bg-white border rounded-xl p-6 shadow-sm">
+          <h3 className="font-semibold text-slate-800 mb-4">Processing (per file)</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            {["Disassembling", "Malware Family Identification", "Attention Heatmap Visualization", "SOM Analyzing"].map((label, i) => {
+              const idx = i; // 0,1,2
+              const status =
+                circleStep === 0 ? (circleDone[idx] ? "done" : "idle")
+                  : (idx + 1 < circleStep ? "done" : (idx + 1 === circleStep ? "active" : "idle"));
+              return (
                 <div key={label} className="flex flex-col items-center gap-2">
                   <CircleProgress
-                    durationSec={6}
-                    active={processing && bulletsDone && circleStep === i}
-                    onDone={onCircleDone}
+                    durationSec={5}
+                    status={status}
+                    onDone={() => status === "active" && handleCircleDone(idx)}
                   />
                   <div className="text-slate-700 text-sm">{label}</div>
                 </div>
-              ))}
-            </div>
-            <div className="mt-3 text-xs text-slate-500">{processing ? currentFile?.name : ""}</div>
+              );
+            })}
+          </div>
+          <div className="mt-3 text-xs text-slate-500">{processing ? currentFile?.name : ""}</div>
+        </section>
+
+        {/* 第三列：模型待訓練資料（span 3） */}
+        <section className="xl:col-span-3 relative bg-white border rounded-xl p-6 shadow-sm">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-lg font-semibold text-slate-800">模型待訓練資料</h3>
+            <button
+              className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-sm"
+              onClick={() => setBulkOpen(true)}
+            >
+              匯入true label（JSON / 貼上代碼）
+            </button>
           </div>
 
-          {/* 模型待訓練資料（保留 Details 欄） */}
-          <div className="relative bg-white border rounded-xl p-6 shadow-sm">
-            <div className="flex items-start justify-between mb-3">
-              <h3 className="text-lg font-semibold text-slate-800">模型待訓練資料</h3>
-              <button
-                className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-sm"
-                onClick={() => setBulkOpen(true)}
-              >
-                匯入真實標籤（JSON / 貼上代碼）
-              </button>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-left text-slate-600 border-b">
-                    <th className="py-2 pr-4">Filename</th>
-                    <th className="py-2 pr-4">Predicted label</th>
-                    <th className="py-2 pr-4">True label</th>
-                    <th className="py-2 pr-4">True-label draft</th>
-                    <th className="py-2 pr-4">Details</th>
-                    <th className="py-2 pr-4">Action</th>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-slate-600 border-b">
+                  <th className="py-2 pr-4">Filename</th>
+                  <th className="py-2 pr-4">Predicted label</th>
+                  <th className="py-2 pr-4">True label</th>
+                  <th className="py-2 pr-4">True-label draft</th>
+                  <th className="py-2 pr-4">Action</th>
+                  <th className="py-2 pr-4">Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trainRows.map(row => (
+                  <tr key={row.id} className="border-b last:border-b-0">
+                    <td className="py-2 pr-4 font-mono">{row.filename}</td>
+                    <td className="py-2 pr-4">
+                      <span className="inline-flex items-center gap-2">
+                        <span className="inline-block w-3 h-3 rounded-full" style={{ background: colors[row.pred] || "#999" }} />
+                        {row.pred}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4">{row.trueLabel}</td>
+                    <td className="py-2 pr-4">
+                      <select
+                        className="border rounded px-2 py-1"
+                        value={row.provision ?? ""}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setTrainRows(prev => prev.map(r => r.id === row.id ? { ...r, provision: v } : r));
+                        }}
+                      >
+                        <option value="">-</option>
+                        {labelChoices.map(l => <option key={l} value={l}>{l}</option>)}
+                      </select>
+                    </td>
+                    <td className="py-2 pr-4">
+                      <button
+                        className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                        disabled={!row.provision}
+                        onClick={() => {
+                          setTrainRows(prev => prev.map(r => r.id === row.id ? { ...r, trueLabel: r.provision } : r));
+                        }}
+                      >
+                        Submit
+                      </button>
+                    </td>
+                    <td className="py-2 pr-4">
+                      <button className="text-blue-600 hover:underline" 
+                        onClick={() => {
+                        navigate("/report", {
+                          state: {
+                            filename: row.filename,
+                            predLabel: row.pred,  // ← 關鍵：把 predicted label 傳過去
+                          },
+                        });
+                      }}  target="_blank" rel="noreferrer">
+                        View</button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {trainRows.map(row => (
-                    <tr key={row.id} className="border-b last:border-b-0">
-                      <td className="py-2 pr-4 font-mono">{row.filename}</td>
-                      <td className="py-2 pr-4">
-                        <span className="inline-flex items-center gap-2">
-                          <span className="inline-block w-3 h-3 rounded-full" style={{background: (labelColorMap[row.pred] || "#999")}}/>
-                          {row.pred}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4">{row.trueLabel}</td>
-                      <td className="py-2 pr-4">
-                        <select
-                          className="border rounded px-2 py-1"
-                          value={row.provision ?? ""}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setTrainRows(prev => prev.map(r => r.id === row.id ? { ...r, provision: v } : r));
-                          }}
-                        >
-                          <option value="">-</option>
-                          {labelChoices.map(l => <option key={l} value={l}>{l}</option>)}
-                        </select>
-                      </td>
-                      <td className="py-2 pr-4">
-                        <a
-                          className="text-blue-600 hover:underline"
-                          href={`/report-1?file=${encodeURIComponent(row.filename)}`}
-                          target="_blank" rel="noreferrer"
-                        >
-                          View
-                        </a>
-                      </td>
-                      <td className="py-2 pr-4">
-                        <button
-                          className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                          disabled={!row.provision}
-                          onClick={() => {
-                            setTrainRows(prev => prev.map(r => r.id === row.id ? { ...r, trueLabel: r.provision } : r));
-                          }}
-                        >
-                          Submit
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {!trainRows.length && (
-                    <tr><td colSpan={6} className="py-4 text-center text-slate-500">目前沒有資料列</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="mt-4">
-              <button
-                className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                onClick={() => setTrainOpen(true)}
-              >
-                start training model
-              </button>
-            </div>
+                ))}
+                {!trainRows.length && (
+                  <tr><td colSpan={6} className="py-4 text-center text-slate-500">目前沒有資料列</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4">
+            <button
+              className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={() => setTrainOpen(true)}
+            >
+              start training model
+            </button>
           </div>
         </section>
       </main>
-
       {/* Bulk JSON Modal */}
       {bulkOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
@@ -545,7 +569,43 @@ export default function Home() {
 
             {!training ? (
               <>
-                {/* ...（與你原本相同，略） */}
+                <div className="flex items-center justify-end my-2">
+                  <button
+                    className="px-3 py-1.5 rounded border border-slate-300 hover:bg-slate-50 text-sm"
+                    onClick={toggleSelectAll}
+                  >
+                    {selectAll ? "deselect all" : "select all"}
+                  </button>
+                </div>
+
+                <div className="max-h-[50vh] overflow-auto border rounded">
+                  <table className="min-w-full text-sm">
+                    <thead className="sticky top-0 bg-white border-b">
+                      <tr className="text-left text-slate-600">
+                        <th className="py-2 px-3">#</th>
+                        <th className="py-2 px-3">Filename</th>
+                        <th className="py-2 px-3">Predicted</th>
+                        <th className="py-2 px-3">True label</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {eligible.map(r => (
+                        <tr key={r.id} className="border-b last:border-b-0">
+                          <td className="py-2 px-3">
+                            <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleOne(r.id)} />
+                          </td>
+                          <td className="py-2 px-3 font-mono">{r.filename}</td>
+                          <td className="py-2 px-3">{r.pred}</td>
+                          <td className="py-2 px-3">{r.trueLabel}</td>
+                        </tr>
+                      ))}
+                      {!eligible.length && (
+                        <tr><td colSpan={4} className="py-4 text-center text-slate-500">沒有可用資料（需先填入 True label）</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
                 <div className="flex items-center justify-between mt-4">
                   <button className="px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50" onClick={() => setTrainOpen(false)}>cancel</button>
                   <button
@@ -559,8 +619,8 @@ export default function Home() {
               </>
             ) : (
               <div className="py-10 flex flex-col items-center gap-4">
-                <CircleProgress durationSec={60} active onDone={() => {}} size={128} />
-                <div className="text-slate-700">Training in progress… (~60s)</div>
+                <CircleProgress key={trainCircleKey} durationSec={10} status="active" onDone={() => { }} size={128} />
+                <div className="text-slate-700">Training in progress…</div>
               </div>
             )}
           </div>

@@ -6,6 +6,8 @@ import { useNavigate } from "react-router-dom";
  *  ========================== */
 export const LABELS_JSON = "https://raw.githubusercontent.com/syy88824/C_practice/refs/heads/main/label_list.json"; // e.g. https://raw.githubusercontent.com/<user>/<repo>/main/labels.json
 export const ANY_DATA_JSON_WITH_TRUE_LABELS = ""; // 若無 labels.json，可由資料集的 "true_label" 收集
+// ✨ 新增：可選擇由 URL 匯入資料進「模型待訓練資料」（僅示意，格式盡量包含 filename / pred / true_label）
+export const DATASET_JSON_URL = "https://raw.githubusercontent.com/syy88824/mis_frontend/refs/heads/master/pred_label.json";
 
 /** ==========================
  *  調色盤（你提供的 24 色）
@@ -37,16 +39,7 @@ function TopBar() {
   );
 }
 
-/** ----------------- Animated Bullets -----------------
- *  需求：
- *  - 只在「檔案開始處理前」播放，每 3 秒顯示一點
- *  - progress circle 執行期間保持靜止
- *  - 等整個檔案 3 個圈都完成、資料列加入後再清空
- *  實作：
- *  - playKey 正數：開始播放
- *  - playKey = -1：清空（不播放）
- *  - 其他：保持當前可見數量
- */
+/** ----------------- Animated Bullets ----------------- */
 function AnimatedBullets({ items, playKey, title }) {
   const [visibleCount, setVisibleCount] = useState(0);
 
@@ -75,17 +68,7 @@ function AnimatedBullets({ items, playKey, title }) {
   );
 }
 
-/** ----------------- CircleProgress -----------------
- *  需求：
- *  - 三個圈初始都是灰色
- *  - 正在跑的圈顯示動畫
- *  - 跑完的圈保持藍色直到整個檔案完成
- *  - 檔案完成後才全部重置成灰色
- *  實作：
- *  - props:
- *    - status: "idle" | "active" | "done"
- *    - onDone：只在 active 動畫完成時觸發
- */
+/** ----------------- CircleProgress ----------------- */
 function CircleProgress({ durationSec, status, onDone, size = 64 }) {
   const radius = 28;
   const circumference = 2 * Math.PI * radius;
@@ -124,6 +107,55 @@ function CircleProgress({ durationSec, status, onDone, size = 64 }) {
   );
 }
 
+/** ----------------- Pagination (20/頁) ----------------- */
+const PAGE_SIZE = 5;
+function usePagination(list) {
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil((list?.length || 0) / PAGE_SIZE));
+  const pageItems = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return (list || []).slice(start, start + PAGE_SIZE);
+  }, [list, page]);
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);
+  return { page, setPage, totalPages, pageItems };
+}
+function Pager({ page, setPage, totalPages, labelPrefix, totalText }) {
+  const startIdx = (page - 1) * PAGE_SIZE + 1;
+  const endIdx = Math.min(page * PAGE_SIZE, page * PAGE_SIZE); // 顯示固定區間格式
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3 text-sm">
+      <div className="text-slate-600">{labelPrefix} 第{startIdx}-{endIdx}筆資料，{totalText}</div>
+      <div className="flex items-center gap-2">
+        <button
+          className="px-2 py-1 rounded border"
+          onClick={() => setPage(p => Math.max(1, p - 1))}
+          disabled={page === 1}
+        >
+          上一頁
+        </button>
+        第<select
+
+          className="border rounded px-2 py-1"
+          value={page}
+          onChange={(e) => setPage(Number(e.target.value))}
+        >
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+        <span>/ {totalPages}頁</span>
+
+        <button
+          className="px-2 py-1 rounded border"
+          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+          disabled={page === totalPages}
+        >
+          下一頁
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   useEffect(() => { document.title = "File Uploading"; }, []);
@@ -165,67 +197,68 @@ export default function Home() {
   /** ===== Bullets & Circles 狀態 ===== */
   const bulletItems = ["PE 32-file", "is .exe", "is UPX compressed"];
   const [bulletPlayKey, setBulletPlayKey] = useState(0);   // >0 播放；-1 清空；0 保持
-  const [bulletsDone, setBulletsDone] = useState(false);   // 一次播放完成（顯示完三點）
-  const [circleStep, setCircleStep] = useState(0);         // 0=尚未開始, 1,2,3=第幾顆在跑
-  const [circleDone, setCircleDone] = useState([false, false, false]); // 三顆是否已完成（保持藍色直到整檔案結束）
+  const [bulletsDone, setBulletsDone] = useState(false);   // 一次播放完成
+  const [circleStep, setCircleStep] = useState(0);         // 0=尚未開始, 1..N=第幾顆在跑
+  const [circleDone, setCircleDone] = useState([false, false, false, false]); // 4 顆
 
   /** ===== 模型待訓練資料 ===== */
-  // [ADD] —— 訓練相關狀態
   const [trainRows, setTrainRows] = useState([]);
-
+  const [canTrainEnabled, setCanTrainEnabled] = useState(false); // ✨ 初始 disabled，檔案分析完才啟用
   const nextId = useRef(1);
+
+  // ✨ 新增：從 URL 匯入資料（若有設定 DATASET_JSON_URL）
+  useEffect(() => {
+    let aborted = false;
+    (async () => {
+      if (!DATASET_JSON_URL) return;
+      try {
+        const r = await fetch(DATASET_JSON_URL, { cache: "no-store" });
+        const js = await r.json();
+        const arr = Array.isArray(js) ? js : [js];
+        const rows = arr.map((it, i) => ({
+          id: nextId.current++,
+          filename: String(it.filename || `sample_${i}.exe`),
+          pred: String(it.pred_label || "unknown"),
+          trueLabel: String(it.true_label || "-"),
+          provision: it.true_label || "",
+          finetuned: false,
+        }));
+        if (!aborted) setTrainRows(prev => [...rows, ...prev]);
+      } catch (e) { /* ignore */ }
+    })();
+    return () => { aborted = true; };
+  }, []);
+
   const randomPred = (filename) => {
-
-    // 確保有 labels 才能 random
     if (!labelChoices || !labelChoices.length) return "unknown";
-
-    // 特定條件判斷
     if (filename.toLowerCase().includes("738cfa86c6b8263638afc7a51ee41863")) {
-      return "WORM.AUTOIT";   // 這裡的 "malware" 必須是 labels 裡面有的值
+      return "WORM.AUTOIT";
     } else if (filename.toLowerCase().startsWith("dogwaffle")) {
-      return "GOODWARE";     // 同樣要確保 "clean" 在 labels 裡
+      return "GOODWARE";
     }
-
-    // 其餘情況 → 隨機
     return labelChoices[Math.floor(Math.random() * labelChoices.length)];
   };
 
-
   /** ===== 上傳（分批） ===== */
-  // 忽略的系統檔（可只留 desktop.ini）
   const NOISE_NAMES = new Set(["desktop.ini", ".ds_store", "thumbs.db"]);
-
-  function isSystemNoise(file) {
-    const n = (file?.name || "").toLowerCase();
-    return NOISE_NAMES.has(n);
-  }
-
-  // 白名單：只分析 exe（若你也要 dll/sys，就加進去）
-  const ALLOWED_EXT = /\.(exe)$/i;
-  function isAllowedExt(file) {
-    const n = (file?.name || "");
-    return ALLOWED_EXT.test(n);
-  }
-
+  const ALLOWED_EXT = /(\.exe)$/i;
+  const isSystemNoise = (file) => NOISE_NAMES.has((file?.name || "").toLowerCase());
+  const isAllowedExt = (file) => ALLOWED_EXT.test(file?.name || "");
 
   const handleFiles = (fileList) => {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    // ✅ 新增：先排除系統檔，再做副檔名白名單
     const toProcess = files.filter(f => !isSystemNoise(f) && isAllowedExt(f));
-    // ✅ 新增：若全被忽略，直接提示並中止
     if (!toProcess.length) {
       window.alert("沒有可處理的檔案（已忽略 desktop.ini 等非 exe 檔）。");
       return;
     }
     if (!processing && activeQueue.length === 0) {
-      // 開新批（注意：用 toProcess，而不是 all/files）
       setActiveQueue(toProcess);
       setCurrentBatchTotal(toProcess.length);
       setLastBatchTotal(toProcess.length);
       startNextFile(toProcess[0]);
     } else {
-      // 排到下一批
       setPendingQueue(prev => prev.concat(toProcess));
     }
   };
@@ -238,9 +271,8 @@ export default function Home() {
     setProcessing(true);
     setBulletsDone(false);
     setCircleStep(0);
-    setCircleDone([false, false, false]);
-    setBulletPlayKey(k => k + 1); // 播放一次 bullets
-    // bullets 結束後才啟動第一顆 circle
+    setCircleDone([false, false, false, false]);
+    setBulletPlayKey(k => k + 1);
     const totalMs = bulletItems.length * 3000 + 2000;
     setTimeout(() => {
       setBulletsDone(true);
@@ -258,15 +290,22 @@ export default function Home() {
     if (idx < 3) {
       setCircleStep(idx + 2); // 下一顆開始
     } else {
-      // 三顆都完成：加入表格 → 清空 bullets 文字 & 重置圈圈 → 進下一個檔案
+      // 四顆都完成：加入表格
       const file = activeQueue[0];
-      const id = nextId.current++;
-      setTrainRows(prev => [{ id, filename: file.name, pred: randomPred(file.name), trueLabel: "-", provision: "" }, ...prev]);
+      if (file) {
+        const id = nextId.current++;
+        setTrainRows(prev => [{ id, filename: file.name, pred: randomPred(file.name), trueLabel: "-", provision: "", finetuned: false }, ...prev]);
+      }
+      // 提示並開啟可訓練
+      if (!canTrainEnabled) {
+        window.alert("Your analyzed data has reached a sufficient amount for fine-tuning the model.");
+        setCanTrainEnabled(true);
+      }
 
-      // 清空 bullets（但要等加入表格完才清）
-      setBulletPlayKey(-1);       // 讓 AnimatedBullets 清空
-      setCircleStep(0);           // 停止動畫
-      setCircleDone([false, false, false]); // 全部灰
+      // 清空 bullets 與圈圈
+      setBulletPlayKey(-1);
+      setCircleStep(0);
+      setCircleDone([false, false, false, false]);
 
       // 切到下一個檔案/批次
       setActiveQueue(prev => {
@@ -284,7 +323,7 @@ export default function Home() {
             setLastBatchTotal(nextBatch.length);
             setTimeout(() => startNextFile(nextBatch[0]), 0);
           } else {
-            setCurrentBatchTotal(0); // idle，畫面顯示 0/N
+            setCurrentBatchTotal(0);
           }
         }
         return rest;
@@ -292,14 +331,48 @@ export default function Home() {
     }
   };
 
-  /** ===== Bulk JSON for true labels（保留） ===== */
+  /** ===== Training modal pool（隨機抽取 1/5，排除 finetuned） ===== */
+  const [trainOpen, setTrainOpen] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [trainCircleKey, setTrainCircleKey] = useState(0);
+  const [trainPool, setTrainPool] = useState([]); // 顯示在 modal 的 1/5 抽樣
+
+  const openTraining = () => {
+    // 從未 finetuned 的資料中抽 1/5
+    const candidates = trainRows.filter(r => !r.finetuned);
+    const pickCount = Math.max(0, Math.floor(candidates.length / 5));
+    const shuffled = [...candidates].sort(() => Math.random() - 0.5);
+    const sampled = shuffled.slice(0, pickCount);
+    setTrainPool(sampled);
+    setTrainOpen(true);
+  };
+
+  // Modal 內全數皆需有 true_label 才能訓練
+  const allModalLabeled = useMemo(() => trainPool.length > 0 && trainPool.every(r => r.trueLabel && r.trueLabel !== "-"), [trainPool]);
+
+  const startTraining = () => {
+    if (!allModalLabeled) return; // 保護
+    setTraining(true);
+    setTrainCircleKey(k => k + 1);
+    setTimeout(() => {
+      // 訓練完成：把目前「模型待訓練資料」的資料都打勾 finetuned
+      setTrainRows(prev => prev.map(r => ({ ...r, finetuned: true })));
+      setTraining(false);
+      setTrainOpen(false);
+      setTrainPool([]);
+      setCanTrainEnabled(false); // 訓練後暫時關閉，等待下次新分析資料
+    }, 10000);
+  };
+
+  /** ===== 批次匯入 true label（移到 modal） ===== */
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkText, setBulkText] = useState("");
   const [bulkFile, setBulkFile] = useState(null);
   const [bulkError, setBulkError] = useState("");
 
-  const applyBulkJson = (entries) => {
-    setTrainRows(prev => prev.map(row => {
+  const applyBulkJsonToModal = (entries) => {
+    // 只更新 modal pool 中的 trueLabel
+    setTrainPool(prev => prev.map(row => {
       const hit = entries.find(e => e.filename === row.filename);
       if (!hit) return row;
       const v = hit.true_label;
@@ -311,7 +384,7 @@ export default function Home() {
     try {
       setBulkError("");
       let text = bulkText.trim();
-      if (bulkFile) text = await bulkFile.text();
+      if (bulkFile) text = await (bulkFile?.text?.() || "");
       if (!text) return;
       let data = JSON.parse(text);
       if (!Array.isArray(data)) data = [data];
@@ -322,69 +395,32 @@ export default function Home() {
         }
       }
       if (!entries.length) throw new Error("Empty or invalid JSON format.");
-      applyBulkJson(entries);
+      applyBulkJsonToModal(entries);
       setBulkOpen(false); setBulkText(""); setBulkFile(null);
     } catch {
       setBulkError("JSON 解析失敗，請確認格式為：[{\"filename\":\"xxx.exe\",\"true_label\":\"trojan\"}, ...]");
     }
   };
 
-  /** ===== Training modal（保留） ===== */
-  const [trainOpen, setTrainOpen] = useState(false);
-  const eligible = useMemo(() => trainRows.filter(r => r.trueLabel && r.trueLabel !== "-"), [trainRows]);
-  const [selectedIds, setSelectedIds] = useState(new Set());
-  const [selectAll, setSelectAll] = useState(false);
-  const [training, setTraining] = useState(false);
-  const [trainCircleKey, setTrainCircleKey] = useState(0);
-
-  const toggleSelectAll = () => {
-    if (selectAll) { setSelectedIds(new Set()); setSelectAll(false); }
-    else { setSelectedIds(new Set(eligible.map(r => r.id))); setSelectAll(true); }
-  };
-  const toggleOne = (id) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
-  const startTraining = () => {
-    if (!selectedIds.size) { setTrainOpen(false); return; }
-    setTraining(true);
-    setTrainCircleKey(k => k + 1);
-    setTimeout(() => {
-      setTraining(false);
-      setTrainOpen(false);
-      setTrainRows([]);
-      setActiveQueue([]);
-      setPendingQueue([]);
-      setProcessing(false);
-      setCurrentBatchTotal(0);
-      setLastBatchTotal(0);
-      setSelectedIds(new Set());
-      setSelectAll(false);
-    }, 10000);
-  };
-
   /** ===== 批次計數顯示 ===== */
   const remaining = activeQueue.length > 0 ? activeQueue.length : 0;
   const total = activeQueue.length > 0 ? currentBatchTotal : lastBatchTotal;
 
-  /** ===== 版面配置（依你的草圖） =====
-   *  最大化：第一列 左：Upload（寬） 右：Bullets（窄）
-   *         第二列：Progress（佔滿兩欄）
-   *         第三列：模型待訓練（佔滿兩欄）
-   *  寬度縮到一半：全部直向堆疊（Upload → Bullets → Progress → Table）
-   */
+  /** ===== 版面配置 ===== */
   const currentFile = activeQueue[0];
   const bulletsTitle = currentFile ? `${currentFile.name} has…` : "等待處理的檔案…";
   const navigate = useNavigate();
+
+  // Pagination — 主表（模型待訓練資料）
+  const { page: mainPage, setPage: setMainPage, totalPages: mainTotalPages, pageItems: mainPageItems } = usePagination(trainRows);
+  // Pagination — Modal 表
+  const { page: modalPage, setPage: setModalPage, totalPages: modalTotalPages, pageItems: modalPageItems } = usePagination(trainPool);
+
   return (
-    
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
       <TopBar />
 
-      <main className="mx-auto max-w-6xl px-4 grid grid-cols-1 xl:grid-cols-3 ">
+      <main className="mx-auto max-w-6xl px-4 py-8 grid grid-cols-1 xl:grid-cols-3">
         {/* 第一列：Upload（span 2） + Bullets（span 1） */}
         <section
           className="xl:col-span-2 border-2 border-dashed border-slate-300 rounded-xl p-8 bg-white shadow-sm"
@@ -427,7 +463,7 @@ export default function Home() {
           <h3 className="font-semibold text-slate-800 mb-4">Processing (per file)</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
             {["Disassembling", "Malware Family Identification", "Attention Heatmap Visualization", "SOM Analyzing"].map((label, i) => {
-              const idx = i; // 0,1,2
+              const idx = i; // 0..3
               const status =
                 circleStep === 0 ? (circleDone[idx] ? "done" : "idle")
                   : (idx + 1 < circleStep ? "done" : (idx + 1 === circleStep ? "active" : "idle"));
@@ -450,12 +486,7 @@ export default function Home() {
         <section className="xl:col-span-3 relative bg-white border rounded-xl p-6 shadow-sm">
           <div className="flex items-start justify-between mb-3">
             <h3 className="text-lg font-semibold text-slate-800">模型待訓練資料</h3>
-            <button
-              className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-sm"
-              onClick={() => setBulkOpen(true)}
-            >
-              匯入true label（JSON / 貼上代碼）
-            </button>
+            {/* 匯入 true label 移到 training modal，這裡移除 */}
           </div>
 
           <div className="overflow-x-auto">
@@ -464,14 +495,12 @@ export default function Home() {
                 <tr className="text-left text-slate-600 border-b">
                   <th className="py-2 pr-4">Filename</th>
                   <th className="py-2 pr-4">Predicted label</th>
-                  <th className="py-2 pr-4">True label</th>
-                  <th className="py-2 pr-4">True-label draft</th>
-                  <th className="py-2 pr-4">Action</th>
                   <th className="py-2 pr-4">Details</th>
+                  <th className="py-2 pr-4">Finetuned</th>
                 </tr>
               </thead>
               <tbody>
-                {trainRows.map(row => (
+                {mainPageItems.map(row => (
                   <tr key={row.id} className="border-b last:border-b-0">
                     <td className="py-2 pr-4 font-mono">{row.filename}</td>
                     <td className="py-2 pr-4">
@@ -480,64 +509,52 @@ export default function Home() {
                         {row.pred}
                       </span>
                     </td>
-                    <td className="py-2 pr-4">{row.trueLabel}</td>
                     <td className="py-2 pr-4">
-                      <select
-                        className="border rounded px-2 py-1"
-                        value={row.provision ?? ""}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setTrainRows(prev => prev.map(r => r.id === row.id ? { ...r, provision: v } : r));
-                        }}
-                      >
-                        <option value="">-</option>
-                        {labelChoices.map(l => <option key={l} value={l}>{l}</option>)}
-                      </select>
-                    </td>
-                    <td className="py-2 pr-4">
-                      <button
-                        className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                        disabled={!row.provision}
+                      <button className="text-blue-600 hover:underline"
                         onClick={() => {
-                          setTrainRows(prev => prev.map(r => r.id === row.id ? { ...r, trueLabel: r.provision } : r));
-                        }}
-                      >
-                        Submit
+                          navigate("/report", {
+                            state: { filename: row.filename, predLabel: row.pred },
+                          });
+                        }}>
+                        View
                       </button>
                     </td>
                     <td className="py-2 pr-4">
-                      <button className="text-blue-600 hover:underline" 
-                        onClick={() => {
-                        navigate("/report", {
-                          state: {
-                            filename: row.filename,
-                            predLabel: row.pred,  // ← 關鍵：把 predicted label 傳過去
-                          },
-                        });
-                      }}  target="_blank" rel="noreferrer">
-                        View</button>
+                      <input type="checkbox" checked={!!row.finetuned} readOnly />
                     </td>
                   </tr>
                 ))}
                 {!trainRows.length && (
-                  <tr><td colSpan={6} className="py-4 text-center text-slate-500">目前沒有資料列</td></tr>
+                  <tr><td colSpan={4} className="py-4 text-center text-slate-500">目前沒有資料列</td></tr>
                 )}
               </tbody>
             </table>
           </div>
+
+          {/* 分頁（主表） — 顯示固定總筆數 1000 */}
+          <Pager
+            page={mainPage}
+            setPage={setMainPage}
+            totalPages={Math.max(1, Math.ceil(1000 / PAGE_SIZE))}
+            labelPrefix="現在是顯示"
+            totalText="共1000筆資料"
+          />
+
           <div className="mt-4">
             <button
-              className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-              onClick={() => setTrainOpen(true)}
+              className={`px-4 py-2 rounded-lg text-white ${canTrainEnabled ? "bg-emerald-600 hover:bg-emerald-700" : "bg-gray-400 cursor-not-allowed"}`}
+              onClick={openTraining}
+              disabled={!canTrainEnabled}
             >
               start training model
             </button>
           </div>
         </section>
       </main>
-      {/* Bulk JSON Modal */}
+
+      {/* Bulk JSON Modal（for training modal） */}
       {bulkOpen && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[70]">
           <div className="bg-white rounded-2xl shadow-xl w-[min(720px,92vw)] p-6">
             <div className="flex items-start justify-between">
               <h4 className="text-lg font-semibold">批次上傳真實標籤</h4>
@@ -558,23 +575,24 @@ export default function Home() {
         </div>
       )}
 
-      {/* Training Modal（省略：和你現有版一樣） */}
+      {/* Training Modal（重做：移除 checkbox 與 select all；加入 true-label draft 與匯入按鈕；全數標註才可訓練） */}
       {trainOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
-          <div className="bg-white rounded-2xl shadow-xl w-[min(900px,94vw)] p-6">
+          <div className="bg-white rounded-2xl shadow-xl w-[min(1000px,94vw)] p-6">
             <div className="flex items-start justify-between">
-              <h4 className="text-lg font-semibold">Select the files you would like to feed into the model</h4>
+              <h4 className="text-lg font-semibold">Fill in the true label of the selected files</h4>
               <button className="text-slate-500 hover:text-slate-700" onClick={() => setTrainOpen(false)} disabled={training}>✕</button>
             </div>
 
             {!training ? (
               <>
-                <div className="flex items-center justify-end my-2">
+                {/* 取代原本 select all 區塊，改為「匯入 true label」 */}
+                <div className="flex items-center justify-end my-2 gap-2">
                   <button
                     className="px-3 py-1.5 rounded border border-slate-300 hover:bg-slate-50 text-sm"
-                    onClick={toggleSelectAll}
+                    onClick={() => setBulkOpen(true)}
                   >
-                    {selectAll ? "deselect all" : "select all"}
+                    匯入true label（JSON / 貼上代碼）
                   </button>
                 </div>
 
@@ -586,31 +604,69 @@ export default function Home() {
                         <th className="py-2 px-3">Filename</th>
                         <th className="py-2 px-3">Predicted</th>
                         <th className="py-2 px-3">True label</th>
+                        <th className="py-2 px-3">True-label draft</th>
+                        <th className="py-2 px-3">Submit</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {eligible.map(r => (
+                      {modalPageItems.map((r, i) => (
                         <tr key={r.id} className="border-b last:border-b-0">
-                          <td className="py-2 px-3">
-                            <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleOne(r.id)} />
-                          </td>
+                          <td className="py-2 px-3">{(modalPage - 1) * PAGE_SIZE + i + 1}</td>
                           <td className="py-2 px-3 font-mono">{r.filename}</td>
                           <td className="py-2 px-3">{r.pred}</td>
-                          <td className="py-2 px-3">{r.trueLabel}</td>
+                          <td className="py-2 px-3">{r.trueLabel ?? "-"}</td>
+                          <td className="py-2 px-3">
+                            <select
+                              className="border rounded px-2 py-1"
+                              value={r.trueLabel && r.trueLabel !== "-" ? r.trueLabel : (r.provision ?? "")}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                // 直接更新 modal pool 中的 trueLabel
+                                setTrainPool(prev => prev.map(x => x.id === r.id ? { ...x, provision: v } : x));
+                                setTrainRows(prev => prev.map(x => x.id === r.id ? { ...x, provision: v } : x));
+                              }}
+                            >
+                              <option value="">-</option>
+                              {labelChoices.map(l => <option key={l} value={l}>{l}</option>)}
+                            </select>
+                          </td>
+                          {/* Submit（按下後才把 trueLabel = provision） */}
+                          <td className="py-2 px-3">
+                            <button
+                              className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                              disabled={!r.provision}
+                              onClick={() => {
+                                // ❸ 提交：把 trueLabel 寫入（Modal pool + 主資料表都同步）
+                                setTrainPool(prev => prev.map(x => x.id === r.id ? { ...x, trueLabel: r.provision } : x));
+                                setTrainRows(prev => prev.map(x => x.id === r.id ? { ...x, trueLabel: r.provision } : x));
+                              }}
+                            >
+                              Submit
+                            </button>
+                          </td>
                         </tr>
                       ))}
-                      {!eligible.length && (
-                        <tr><td colSpan={4} className="py-4 text-center text-slate-500">沒有可用資料（需先填入 True label）</td></tr>
+                      {!trainPool.length && (
+                        <tr><td colSpan={4} className="py-4 text-center text-slate-500">沒有可用資料（需先上傳或從主表抽樣）</td></tr>
                       )}
                     </tbody>
                   </table>
                 </div>
 
+                {/* 分頁（Modal 表） — 顯示固定總筆數 200 */}
+                <Pager
+                  page={modalPage}
+                  setPage={setModalPage}
+                  totalPages={Math.max(1, Math.ceil(200 / PAGE_SIZE))}
+                  labelPrefix="現在是顯示"
+                  totalText="共200筆資料"
+                />
+
                 <div className="flex items-center justify-between mt-4">
                   <button className="px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50" onClick={() => setTrainOpen(false)}>cancel</button>
                   <button
-                    className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                    disabled={!eligible.length}
+                    className={`px-4 py-2 rounded-lg text-white ${allModalLabeled ? "bg-emerald-600 hover:bg-emerald-700" : "bg-gray-400 cursor-not-allowed"}`}
+                    disabled={!allModalLabeled}
                     onClick={startTraining}
                   >
                     train the model
